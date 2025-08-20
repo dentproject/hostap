@@ -23,13 +23,23 @@
 #include "sta_info.h"
 #include "airtime_policy.h"
 #include "ap_config.h"
+#ifdef CONFIG_ENABLE_MAB
+#include "mab/mab.h"
+#endif /* CONFIG_ENABLE_MAB */
 
-
+#ifdef CONFIG_ENABLE_MAB
+static void hostapd_config_free_vlan(struct hostapd_vlan *vlan_pt)
+#else
 static void hostapd_config_free_vlan(struct hostapd_bss_config *bss)
+#endif /* CONFIG_ENABLE_MAB */
 {
 	struct hostapd_vlan *vlan, *prev;
 
+#ifdef CONFIG_ENABLE_MAB
+	vlan = vlan_pt;
+#else
 	vlan = bss->vlan;
+#endif /* CONFIG_ENABLE_MAB */
 	prev = NULL;
 	while (vlan) {
 		prev = vlan;
@@ -37,7 +47,11 @@ static void hostapd_config_free_vlan(struct hostapd_bss_config *bss)
 		os_free(prev);
 	}
 
+#ifdef CONFIG_ENABLE_MAB
+	vlan_pt = NULL;
+#else
 	bss->vlan = NULL;
+#endif /* CONFIG_ENABLE_MAB */
 }
 
 
@@ -305,6 +319,11 @@ struct hostapd_config * hostapd_config_defaults(void)
 #endif /* CONFIG_AIRTIME_POLICY */
 
 	hostapd_set_and_check_bw320_offset(conf, 0);
+
+#ifdef CONFIG_ENABLE_MAB
+	dl_list_init(&conf->mab_interfaces);
+	dl_list_init(&conf->learned_mac_list);
+#endif /* CONFIG_ENABLE_MAB */
 
 	return conf;
 }
@@ -875,7 +894,12 @@ void hostapd_config_free_bss(struct hostapd_bss_config *conf)
 	os_free(conf->radius_server_clients);
 	os_free(conf->radius);
 	os_free(conf->radius_das_shared_secret);
+#ifdef CONFIG_ENABLE_MAB
+	hostapd_config_free_vlan(conf->vlan);
+	hostapd_config_free_vlan(conf->mab_vlan);
+#else
 	hostapd_config_free_vlan(conf);
+#endif /* CONFIG_ENABLE_MAB */
 	os_free(conf->time_zone);
 
 #ifdef CONFIG_IEEE80211R_AP
@@ -1042,6 +1066,10 @@ void hostapd_config_free(struct hostapd_config *conf)
 	if (conf == NULL)
 		return;
 
+#ifdef CONFIG_ENABLE_MAB
+	free_mab_interfaces(&conf->mab_interfaces);
+	free_learned_mac_list(&conf->learned_mac_list);
+#endif /* CONFIG_ENABLE_MAB */
 	for (i = 0; i < conf->num_bss; i++)
 		hostapd_config_free_bss(conf->bss[i]);
 	os_free(conf->bss);

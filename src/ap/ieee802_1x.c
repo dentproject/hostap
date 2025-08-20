@@ -34,6 +34,10 @@
 #include "ap_drv_ops.h"
 #include "wps_hostapd.h"
 #include "hs20.h"
+#ifdef CONFIG_ENABLE_MAB
+#include <net/if.h>
+#include "mab/mab.h"
+#endif /* CONFIG_ENABLE_MAB */
 /* FIX: Not really a good thing to require ieee802_11.h here.. (FILS) */
 #include "ieee802_11.h"
 #include "ieee802_1x.h"
@@ -1173,8 +1177,17 @@ void ieee802_1x_receive(struct hostapd_data *hapd, const u8 *sa, const u8 *buf,
 	if (sta->eapol_sm) {
 		sta->eapol_sm->dot1xAuthLastEapolFrameVersion = hdr->version;
 		sta->eapol_sm->dot1xAuthEapolFramesRx++;
+#ifdef CONFIG_ENABLE_MAB
+		/* ensure that if a new eapol is received after a mab request, it can be re-authorized */
+		sta->eapol_sm->is_mab_auth = false;
+		sta->eapol_sm->eap_if->eap_mab_resp = false;
+#endif /* CONFIG_ENABLE_MAB */
 	}
 
+#ifdef CONFIG_ENABLE_MAB
+	/* add EAPOL interface name to STA to be able to move to the required bridge */
+	os_strlcpy(sta->ifname, hapd->conf->iface, IFNAMSIZ + 1);
+#endif /* CONFIG_ENABLE_MAB */
 	key = (struct ieee802_1x_eapol_key *) (hdr + 1);
 	if (datalen >= sizeof(struct ieee802_1x_eapol_key) &&
 	    hdr->type == IEEE802_1X_TYPE_EAPOL_KEY &&
@@ -2042,11 +2055,17 @@ ieee802_1x_receive_auth(struct radius_msg *msg, struct radius_msg *req,
 	}
 	sta = sm->sta;
 
-	if (radius_msg_verify(msg, shared_secret, shared_secret_len, req, 1)) {
-		wpa_printf(MSG_INFO,
-			   "Incoming RADIUS packet did not have correct Message-Authenticator - dropped");
-		return RADIUS_RX_INVALID_AUTHENTICATOR;
+#ifdef CONFIG_ENABLE_MAB
+	if (!sm->is_mab_auth) {
+#endif /* CONFIG_ENABLE_MAB */
+		if (radius_msg_verify(msg, shared_secret, shared_secret_len, req, 1)) {
+			wpa_printf(MSG_INFO,
+				"Incoming RADIUS packet did not have correct Message-Authenticator - dropped");
+			return RADIUS_RX_INVALID_AUTHENTICATOR;
+		}
+#ifdef CONFIG_ENABLE_MAB
 	}
+#endif /* CONFIG_ENABLE_MAB */
 
 	if (hdr->code != RADIUS_CODE_ACCESS_ACCEPT &&
 	    hdr->code != RADIUS_CODE_ACCESS_REJECT &&
@@ -2087,6 +2106,12 @@ ieee802_1x_receive_auth(struct radius_msg *msg, struct radius_msg *req,
 	switch (hdr->code) {
 	case RADIUS_CODE_ACCESS_ACCEPT:
 #ifndef CONFIG_NO_VLAN
+#ifdef CONFIG_ENABLE_MAB
+		if (sm->is_mab_auth) {
+			ap_sta_set_authorized(hapd, sta, 1);
+		}
+#endif /* CONFIG_ENABLE_MAB */
+
 		if (hapd->conf->ssid.dynamic_vlan != DYNAMIC_VLAN_DISABLED &&
 		    ieee802_1x_update_vlan(msg, hapd, sta) < 0)
 			break;
@@ -2101,6 +2126,40 @@ ieee802_1x_receive_auth(struct radius_msg *msg, struct radius_msg *req,
 		if ((sta->flags & WLAN_STA_ASSOC) &&
 		    ap_sta_bind_vlan(hapd, sta) < 0)
 			break;
+
+#ifdef CONFIG_ENABLE_MAB
+		if (!strcmp(hapd->driver->name, "wired")) {
+			struct vlan_description vlan_desc;
+			os_memset(&vlan_desc, 0, sizeof(vlan_desc));
+			vlan_desc.notempty = !!radius_msg_get_vlanid(msg, &vlan_desc.untagged,
+								MAX_NUM_TAGGED_VLAN,
+								vlan_desc.tagged);
+			sta->vlan_id = vlan_desc.untagged;
+
+			if (sta->vlan_id >= 0) {
+				if (sta->vlan_id == 0) {
+					wpa_printf(MSG_DEBUG, "MAB: No VLAN information received from RADIUS! Assuming VLAN 1.");
+					sta->vlan_id = 1;
+				}
+				if (hapd->iconf->dynamic_assignment) {
+					const char *br_name;
+					if (hapd->iconf->vlan_bridge[0] != '\0') {
+						br_name = hapd->iconf->vlan_bridge;
+					} else {
+						br_name = hostapd_get_vlan_id_ifname(hapd->conf->mab_vlan, sta->vlan_id);
+					}
+					if (br_name) {
+						move_to_bridge(sta->ifname, br_name);
+						add_vid_to_ifindex(sta->ifname, sta->vlan_id);
+					} else {
+						wpa_printf(MSG_ERROR, "MAB: No bridge configured for VLAN %d in the mab_vlan_file!", sta->vlan_id);
+					}
+				}
+			} else {
+				wpa_printf(MSG_DEBUG, "MAB: Error getting VLAN ID!");
+			}
+		}
+#endif /* CONFIG_ENABLE_MAB */
 #endif /* CONFIG_NO_VLAN */
 
 		sta->session_timeout_set = !!session_timeout_set;
@@ -2117,15 +2176,27 @@ ieee802_1x_receive_auth(struct radius_msg *msg, struct radius_msg *req,
 			ap_sta_no_session_timeout(hapd, sta);
 
 		sm->eap_if->aaaSuccess = true;
+#ifdef CONFIG_ENABLE_MAB
+		if (sm->is_mab_auth) {
+			sm->eap_if->eap_mab_resp = true;
+		}
+#endif /* CONFIG_ENABLE_MAB */
+
 		override_eapReq = 1;
-		ieee802_1x_get_keys(hapd, sta, msg, req, shared_secret,
-				    shared_secret_len);
-		ieee802_1x_store_radius_class(hapd, sta, msg);
-		ieee802_1x_update_sta_identity(hapd, sta, msg);
-		ieee802_1x_update_sta_cui(hapd, sta, msg);
-		ieee802_1x_check_hs20(hapd, sta, msg,
-				      session_timeout_set ?
-				      (int) session_timeout : -1);
+#ifdef CONFIG_ENABLE_MAB
+		if (!sm->is_mab_auth) {
+#endif /* CONFIG_ENABLE_MAB */
+			ieee802_1x_get_keys(hapd, sta, msg, req, shared_secret,
+						shared_secret_len);
+			ieee802_1x_store_radius_class(hapd, sta, msg);
+			ieee802_1x_update_sta_identity(hapd, sta, msg);
+			ieee802_1x_update_sta_cui(hapd, sta, msg);
+			ieee802_1x_check_hs20(hapd, sta, msg,
+						session_timeout_set ?
+						(int) session_timeout : -1);
+#ifdef CONFIG_ENABLE_MAB
+		}
+#endif /* CONFIG_ENABLE_MAB */
 		break;
 	case RADIUS_CODE_ACCESS_REJECT:
 		sm->eap_if->aaaFail = true;
@@ -2137,6 +2208,18 @@ ieee802_1x_receive_auth(struct radius_msg *msg, struct radius_msg *req,
 				   MACSTR, reason_code, MAC2STR(sta->addr));
 			sta->disconnect_reason_code = reason_code;
 		}
+
+#ifdef CONFIG_ENABLE_MAB
+		if (sm->is_mab_auth) {
+			ap_sta_set_authorized(hapd, sta, 0);
+		}
+
+		if (!strcmp(hapd->driver->name, "wired")) {
+			move_to_bridge(sta->ifname, hapd->iconf->mab_bridge);
+			set_interface_isolated(sta->ifname);
+		}
+#endif /* CONFIG_ENABLE_MAB */
+
 		break;
 	case RADIUS_CODE_ACCESS_CHALLENGE:
 		sm->eap_if->aaaEapReq = true;
@@ -2158,7 +2241,14 @@ ieee802_1x_receive_auth(struct radius_msg *msg, struct radius_msg *req,
 		break;
 	}
 
-	ieee802_1x_decapsulate_radius(hapd, sta);
+#ifdef CONFIG_ENABLE_MAB
+	if (!sm->is_mab_auth) {
+#endif /* CONFIG_ENABLE_MAB */
+		ieee802_1x_decapsulate_radius(hapd, sta);
+#ifdef CONFIG_ENABLE_MAB
+	}
+#endif /* CONFIG_ENABLE_MAB */
+
 	if (override_eapReq)
 		sm->eap_if->aaaEapReq = false;
 
@@ -3030,6 +3120,21 @@ int ieee802_1x_get_mib_sta(struct hostapd_data *hapd, struct sta_info *sta,
 	if (os_snprintf_error(buflen - len, ret))
 		return len;
 	len += ret;
+
+#ifdef CONFIG_ENABLE_MAB
+	ret = os_snprintf(buf + len, buflen - len,
+			"ifname=%s\n"
+			"is_mab_auth=%d\n"
+			"is_mab_auth_sent=%d\n"
+			"eap_mab_resp=%d\n",
+			sta->ifname,
+			sta->eapol_sm->is_mab_auth,
+			sta->eapol_sm->is_mab_auth_sent,
+			sta->eapol_sm->eap_if->eap_mab_resp);
+	if (os_snprintf_error(buflen - len, ret))
+		return len;
+	len += ret;
+#endif /* CONFIG_ENABLE_MAB */
 
 	return len;
 }

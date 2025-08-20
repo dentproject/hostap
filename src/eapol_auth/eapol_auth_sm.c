@@ -18,6 +18,10 @@
 #include "eapol_auth_sm.h"
 #include "eapol_auth_sm_i.h"
 
+#ifdef CONFIG_ENABLE_MAB
+#include "mab/mab.h"
+#endif /* CONFIG_ENABLE_MAB */
+
 #define STATE_MACHINE_DATA struct eapol_state_machine
 #define STATE_MACHINE_DEBUG_PREFIX "IEEE 802.1X"
 #define STATE_MACHINE_ADDR sm->addr
@@ -600,6 +604,11 @@ SM_STEP(BE_AUTH)
 		SM_ENTER(BE_AUTH, IDLE);
 		break;
 	case BE_AUTH_IDLE:
+#ifdef CONFIG_ENABLE_MAB
+		if (sm->is_mab_auth) {
+			sm->authStart = false;
+		} else
+#endif /* CONFIG_ENABLE_MAB */
 		if (sm->eap_if->eapFail && sm->authStart)
 			SM_ENTER(BE_AUTH, FAIL);
 		else if (sm->eap_if->eapReq && sm->authStart)
@@ -959,6 +968,14 @@ restart:
 			eapol_auth_step(sm);
 			return;
 		}
+
+#ifdef CONFIG_ENABLE_MAB
+		/* If it is MAB authentication and request was not sent to RADUIS, send the request */
+		if (sm->is_mab_auth && sm->is_mab_auth_sent == false) {
+			sm->is_mab_auth_sent = true;
+			send_mab_request(sm->eapol->conf.ctx, sm->sta);
+		}
+#endif /* CONFIG_ENABLE_MAB */
 
 		/* TODO: find a better location for this */
 		if (sm->eap_if->aaaEapResp) {

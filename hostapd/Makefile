@@ -86,6 +86,11 @@ OBJS += ../src/ap/neighbor_db.o
 OBJS += ../src/ap/rrm.o
 OBJS += ../src/common/ptksa_cache.o
 
+ifdef CONFIG_ENABLE_MAB
+CFLAGS += -DCONFIG_ENABLE_MAB
+OBJS += ../src/mab/mab.o
+endif
+
 OBJS_c = hostapd_cli.o
 OBJS_c += ../src/common/wpa_ctrl.o
 OBJS_c += ../src/utils/os_$(CONFIG_OS).o
@@ -137,6 +142,13 @@ LIBS += -lrt
 LIBS_c += -lrt
 LIBS_h += -lrt
 LIBS_n += -lrt
+endif
+
+ifdef CONFIG_ENABLE_MAB
+LIBS += -lpthread
+LIBS_c += -lpthread
+LIBS_h += -lpthread
+LIBS_n += -lpthread
 endif
 
 ifdef CONFIG_ELOOP_POLL

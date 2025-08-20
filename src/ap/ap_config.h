@@ -484,6 +484,9 @@ struct hostapd_bss_config {
 	int wmm_uapsd;
 
 	struct hostapd_vlan *vlan;
+#ifdef CONFIG_ENABLE_MAB
+	struct hostapd_vlan *mab_vlan; /* keep track of the vlan-bridge associations */
+#endif /* CONFIG_ENABLE_MAB */
 
 	macaddr bssid;
 
@@ -1249,6 +1252,14 @@ struct hostapd_config {
 
 	/* Whether to enable TWT responder in HT and VHT modes */
 	bool ht_vht_twt_responder;
+
+#ifdef CONFIG_ENABLE_MAB
+	struct dl_list learned_mac_list;	/* list of MACs that have been learned */
+	struct dl_list mab_interfaces;		/* list of interfaces on which MAB is enabled */
+	char mab_bridge[IFNAMSIZ + 1];		/* interface name of the mab_bridge */
+	char vlan_bridge[IFNAMSIZ + 1];		/* interface name of the vlan_bridge (the vlan-aware bridge) */
+	int dynamic_assignment;				/* specifies if the port should be moved to bridge according to vlan_file rules */
+#endif /* CONFIG_ENABLE_MAB */
 };
 
 

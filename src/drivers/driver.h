@@ -5972,6 +5972,13 @@ enum wpa_event_type {
 	 * EVENT_MLD_INTERFACE_FREED - Notification of AP MLD interface removal
 	 */
 	EVENT_MLD_INTERFACE_FREED,
+
+#ifdef CONFIG_ENABLE_MAB
+	/**
+	 * EVENT_MAB_RX - MAC learnt for MAC-based authentication
+	 */
+	EVENT_MAB_RX,
+#endif /* CONFIG_ENABLE_MAB */
 };
 
 
@@ -6614,6 +6621,9 @@ union wpa_event_data {
 	 */
 	struct new_sta {
 		const u8 *addr;
+#ifdef CONFIG_ENABLE_MAB
+		char ifname[IFNAMSIZ + 1]; /* store the interface name of the port on which the MAC was learnt */
+#endif /* CONFIG_ENABLE_MAB */
 	} new_sta;
 
 	/**

@@ -39,6 +39,10 @@
 #include "sta_info.h"
 #include "vlan.h"
 #include "wps_hostapd.h"
+#ifdef CONFIG_ENABLE_MAB
+#include "eapol_auth/eapol_auth_sm.h"
+#include "eapol_auth/eapol_auth_sm_i.h"
+#endif /* CONFIG_ENABLE_MAB */
 
 static void ap_sta_remove_in_other_bss(struct hostapd_data *hapd,
 				       struct sta_info *sta);
@@ -1625,6 +1629,12 @@ void ap_sta_disconnect(struct hostapd_data *hapd, struct sta_info *sta,
 
 	if (sta == NULL)
 		return;
+#ifdef CONFIG_ENABLE_MAB
+	if (sta->eapol_sm->is_mab_auth) {
+		/* prevent vlan_remove_dynamic from deleting the bridge */
+		sta->vlan_id = 0;
+	}
+#endif /* CONFIG_ENABLE_MAB */
 	ap_sta_set_authorized(hapd, sta, 0);
 	sta->flags &= ~(WLAN_STA_AUTH | WLAN_STA_ASSOC);
 	hostapd_set_sta_flags(hapd, sta);

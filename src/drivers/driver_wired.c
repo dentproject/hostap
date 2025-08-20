@@ -14,6 +14,11 @@
 #include "driver.h"
 #include "driver_wired_common.h"
 
+#ifdef CONFIG_ENABLE_MAB
+#include <pthread.h>
+#include "mab/mab.h"
+#endif /* CONFIG_ENABLE_MAB */
+
 #include <sys/ioctl.h>
 #undef IFNAMSIZ
 #include <net/if.h>
@@ -74,6 +79,71 @@ struct dhcp_message {
 	u_int32_t cookie;
 	u_int8_t options[308]; /* 312 - cookie */
 };
+
+#ifdef CONFIG_ENABLE_MAB
+static void mab_handle_read(int sock, void *eloop_ctx, void *sock_ctx)
+{
+	char buf[100] = {0};
+	struct driver_wired_common_data *common = eloop_ctx;
+	struct hostapd_data *hapd = common->ctx;
+
+	ssize_t bytes_read = read(sock, buf, sizeof(buf));
+	if (bytes_read < 0)
+	{
+		wpa_printf(MSG_ERROR, "MAB: mab_handle_read read error: %s", strerror(errno));
+		return;
+	}
+
+	request_mac(hapd);
+}
+
+
+void *mac_wakeup_thread(void *arg)
+{
+	char *message = "DING";
+	struct driver_wired_common_data *common = arg;
+	int sock = common->mab_sock[1];
+
+	wpa_printf(MSG_INFO, "MAB: Starting MAC wakeup thread on socket %d", sock);
+
+	while (1)
+	{
+		os_sleep(10, 0);
+		ssize_t bytes_written = write(sock, message, strlen(message) + 1);
+		if (bytes_written < 0)
+		{
+			wpa_printf(MSG_ERROR, "MAB: mac_wakeup_thread write error: %s", strerror(errno));
+			return NULL;
+		}
+	}
+
+	return NULL;
+}
+
+
+static int mab_init_sockets(struct wpa_driver_wired_data *drv)
+{
+	if (pipe(drv->common.mab_sock) == -1)
+	{
+		wpa_printf(MSG_ERROR, "MAB: pipe failed: %s", strerror(errno));
+		return -1;
+	}
+
+	if (eloop_register_read_sock(drv->common.mab_sock[0], mab_handle_read, &drv->common, NULL))
+	{
+		wpa_printf(MSG_ERROR, "MAB: Could not register read socket %d", drv->common.mab_sock[0]);
+		return -1;
+	}
+
+	if (pthread_create(&drv->common.mab_thread, NULL, mac_wakeup_thread, &drv->common) != 0)
+	{
+		wpa_printf(MSG_ERROR, "MAB: Failed to create MAC wakeup thread: %s", strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+#endif /* CONFIG_ENABLE_MAB */
 
 
 #ifdef __linux__
@@ -340,6 +410,33 @@ static void * wired_driver_hapd_init(struct hostapd_data *hapd,
 		   sizeof(drv->common.ifname));
 	drv->use_pae_group_addr = params->use_pae_group_addr;
 
+#ifdef CONFIG_ENABLE_MAB
+	if (!dl_list_empty(&hapd->iconf->mab_interfaces)) {
+		if (hapd->iconf->mab_bridge[0] == '\0') {
+			wpa_printf(MSG_ERROR,
+			   "MAB: mab_interfaces specified, but mab_bridge is missing!");
+			os_free(drv);
+			return NULL;
+		}
+		if (mab_init_sockets(drv)) {
+			os_free(drv);
+			return NULL;
+		}
+
+		assign_ports_to_parking_vlan(hapd);
+	} else {
+		wpa_printf(MSG_INFO,
+			   "MAB: MAB configuration is missing!");
+	}
+
+	if (hapd->conf->iface[0] == '\0' &&
+		   !dl_list_empty(&hapd->iconf->mab_interfaces)) {
+		strncpy(hapd->conf->iface, hapd->iconf->mab_bridge, IFNAMSIZ + 1);
+		params->ifname = hapd->conf->iface;
+		wpa_printf(MSG_INFO,
+			   "MAB: EAPOL interface is missing!");
+	} else
+#endif /* CONFIG_ENABLE_MAB */
 	if (wired_init_sockets(drv, params->own_addr)) {
 		os_free(drv);
 		return NULL;
@@ -362,6 +459,21 @@ static void wired_driver_hapd_deinit(void *priv)
 		eloop_unregister_read_sock(drv->dhcp_sock);
 		close(drv->dhcp_sock);
 	}
+
+#ifdef CONFIG_ENABLE_MAB
+	if (drv->common.mab_sock[0] >= 0) {
+		eloop_unregister_read_sock(drv->common.mab_sock[0]);
+		close(drv->common.mab_sock[0]);
+	}
+
+	if (drv->common.mab_sock[1] >= 0) {
+		close(drv->common.mab_sock[1]);
+	}
+
+	pthread_cancel(drv->common.mab_thread);
+
+	pthread_join(drv->common.mab_thread, NULL);
+#endif /* CONFIG_ENABLE_MAB */
 
 	os_free(drv);
 }
